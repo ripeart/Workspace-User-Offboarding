@@ -6,6 +6,10 @@ A secure, automated offboarding solution for Google Workspace administrators bui
 
 This tool streamlines the user offboarding process by automating critical security and administrative tasks in a single click, ensuring no steps are missed when employees leave your organization.
 
+<p align="center">
+  <img src="offboard1.png" alt="Offboarding Interface" width="600" />
+</p>
+
 ## Features
 
 ### 🔒 Security Actions
