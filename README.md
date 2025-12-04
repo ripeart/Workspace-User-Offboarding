@@ -50,14 +50,10 @@ This tool streamlines the user offboarding process by automating critical securi
 1. In your Apps Script project, click **+** next to Files
 2. Select **HTML**
 3. Name it `offboard`
-4. Copy the contents of `offboard.html` into this file
+4. Copy the contents of `index.html` into this file
+5. Do the same with 'main.gs' and 'appscript.json'
 
-### Step 3: Create the Backend Script
-
-1. In your Apps Script project, open `Code.gs`
-2. Add the backend functions (see Backend Functions section below)
-
-### Step 4: Configure for Your Organization
+### Step 3: Configure for Your Organization
 
 Update the following in the HTML file:
 
@@ -66,7 +62,7 @@ Update the following in the HTML file:
 <img src="YOUR_LOGO_URL_HERE" alt="Company Logo">
 ```
 
-### Step 5: Deploy as Web App
+### Step 4: Deploy as Web App
 
 1. Click **Deploy** > **New deployment**
 2. Select type: **Web app**
@@ -76,256 +72,14 @@ Update the following in the HTML file:
 4. Click **Deploy**
 5. Copy the web app URL
 
-### Step 6: Enable Required APIs
+### Step 5: Enable Required APIs
 
 1. In Apps Script editor, click **Services** (+)
 2. Find and add **Admin SDK API**
 3. Find and add **Admin Reports API**
 4. Click **Add** for each
 
-## Backend Functions Required
 
-Create a new file `offboard.gs` in your Apps Script project with these functions:
-
-```javascript
-/**
- * Serve the HTML interface
- */
-function doGet() {
-  return HtmlService.createHtmlOutputFromFile('offboard')
-    .setTitle('Workspace Offboard')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
-}
-
-/**
- * Get all active users for autocomplete
- */
-function getAllUsers() {
-  try {
-    const users = [];
-    let pageToken;
-    
-    do {
-      const response = AdminDirectory.Users.list({
-        customer: 'my_customer',
-        maxResults: 100,
-        orderBy: 'givenName',
-        pageToken: pageToken,
-        query: 'isSuspended=false',
-        fields: 'users(primaryEmail,name/fullName),nextPageToken'
-      });
-      
-      if (response.users && response.users.length > 0) {
-        response.users.forEach(function(user) {
-          users.push({
-            email: user.primaryEmail,
-            name: user.name.fullName
-          });
-        });
-      }
-      
-      pageToken = response.nextPageToken;
-    } while (pageToken);
-    
-    return users;
-  } catch (error) {
-    console.error('Error fetching users:', error);
-    throw new Error('Failed to fetch users');
-  }
-}
-
-/**
- * Offboard a user - main function
- */
-function offboardUser(formData) {
-  try {
-    // Verify super admin status
-    if (!isSuperAdmin()) {
-      throw new Error('You must be a Google Workspace super admin to use this tool.');
-    }
-    
-    const userEmail = formData.email;
-    const managerEmail = formData.manager; // Optional
-    
-    // Verify user exists
-    const user = AdminDirectory.Users.get(userEmail);
-    const userDisplay = `${user.name.fullName} <${userEmail}>`;
-    
-    // Initialize log array
-    const log = [];
-    
-    // 1. Suspend the user
-    try {
-      AdminDirectory.Users.update({
-        suspended: true
-      }, userEmail);
-      log.push({action: 'Suspend User', result: 'SUCCESS', details: 'User suspended'});
-    } catch (e) {
-      log.push({action: 'Suspend User', result: 'FAILED', details: e.message});
-    }
-    
-    // 2. Reset password
-    try {
-      const newPassword = generatePassword();
-      AdminDirectory.Users.update({
-        password: newPassword,
-        changePasswordAtNextLogin: true
-      }, userEmail);
-      log.push({action: 'Reset Password', result: 'SUCCESS', details: 'Password reset'});
-    } catch (e) {
-      log.push({action: 'Reset Password', result: 'FAILED', details: e.message});
-    }
-    
-    // 3. Remove from all groups
-    try {
-      const groups = AdminDirectory.Groups.list({
-        userKey: userEmail
-      });
-      
-      if (groups.groups && groups.groups.length > 0) {
-        groups.groups.forEach(function(group) {
-          try {
-            AdminDirectory.Members.delete(group.id, userEmail);
-            log.push({action: 'Remove from Groups', result: 'SUCCESS', details: `Removed from ${group.name}`});
-          } catch (e) {
-            log.push({action: 'Remove from Groups', result: 'FAILED', details: `${group.name}: ${e.message}`});
-          }
-        });
-      } else {
-        log.push({action: 'Remove from Groups', result: 'INFO', details: 'User was not in any groups'});
-      }
-    } catch (e) {
-      log.push({action: 'Remove from Groups', result: 'FAILED', details: e.message});
-    }
-    
-    // 4. Transfer Drive ownership (if manager provided)
-    if (managerEmail) {
-      try {
-        // Note: Drive transfer is initiated via Admin SDK
-        // It may take time to complete and runs asynchronously
-        AdminDirectory.DataTransfer.insert({
-          oldOwnerUserId: userEmail,
-          newOwnerUserId: managerEmail,
-          applicationDataTransfers: [{
-            applicationId: '55656082996', // Google Drive application ID
-          }]
-        });
-        log.push({action: 'Transfer Drive', result: 'INITIATED', details: `Transfer to ${managerEmail} initiated (may take hours)`});
-      } catch (e) {
-        log.push({action: 'Transfer Drive', result: 'FAILED', details: e.message});
-      }
-    } else {
-      log.push({action: 'Transfer Drive', result: 'SKIPPED', details: 'No manager specified'});
-    }
-    
-    // 5. Remove custom admin roles
-    try {
-      const roleAssignments = AdminDirectory.RoleAssignments.list('my_customer', {
-        userKey: userEmail
-      });
-      
-      if (roleAssignments.items && roleAssignments.items.length > 0) {
-        roleAssignments.items.forEach(function(assignment) {
-          try {
-            AdminDirectory.RoleAssignments.remove('my_customer', assignment.roleAssignmentId);
-            log.push({action: 'Remove Admin Roles', result: 'SUCCESS', details: `Removed role: ${assignment.roleId}`});
-          } catch (e) {
-            log.push({action: 'Remove Admin Roles', result: 'FAILED', details: e.message});
-          }
-        });
-      } else {
-        log.push({action: 'Remove Admin Roles', result: 'INFO', details: 'User had no custom admin roles'});
-      }
-    } catch (e) {
-      log.push({action: 'Remove Admin Roles', result: 'FAILED', details: e.message});
-    }
-    
-    // 6. Remove app-specific passwords
-    try {
-      const asps = AdminDirectory.Asps.list(userEmail);
-      if (asps.items && asps.items.length > 0) {
-        asps.items.forEach(function(asp) {
-          try {
-            AdminDirectory.Asps.remove(userEmail, asp.codeId);
-            log.push({action: 'Remove ASPs', result: 'SUCCESS', details: `Removed ASP: ${asp.name}`});
-          } catch (e) {
-            log.push({action: 'Remove ASPs', result: 'FAILED', details: e.message});
-          }
-        });
-      } else {
-        log.push({action: 'Remove ASPs', result: 'INFO', details: 'User had no app-specific passwords'});
-      }
-    } catch (e) {
-      log.push({action: 'Remove ASPs', result: 'FAILED', details: e.message});
-    }
-    
-    // 7. Revoke OAuth tokens
-    try {
-      const tokens = AdminDirectory.Tokens.list(userEmail);
-      if (tokens.items && tokens.items.length > 0) {
-        tokens.items.forEach(function(token) {
-          try {
-            AdminDirectory.Tokens.remove(userEmail, token.clientId);
-            log.push({action: 'Revoke OAuth Tokens', result: 'SUCCESS', details: `Revoked: ${token.displayText}`});
-          } catch (e) {
-            log.push({action: 'Revoke OAuth Tokens', result: 'FAILED', details: e.message});
-          }
-        });
-      } else {
-        log.push({action: 'Revoke OAuth Tokens', result: 'INFO', details: 'User had no OAuth tokens'});
-      }
-    } catch (e) {
-      log.push({action: 'Revoke OAuth Tokens', result: 'FAILED', details: e.message});
-    }
-    
-    // 8. Sign out all sessions
-    try {
-      AdminDirectory.Users.signOut(userEmail);
-      log.push({action: 'Sign Out Sessions', result: 'SUCCESS', details: 'User signed out of all sessions'});
-    } catch (e) {
-      log.push({action: 'Sign Out Sessions', result: 'FAILED', details: e.message});
-    }
-    
-    // Return success with detailed log
-    return {
-      success: true,
-      userDisplay: userDisplay,
-      message: `User ${userDisplay} has been offboarded.`,
-      log: log
-    };
-    
-  } catch (error) {
-    Logger.log('Error offboarding user: ' + error.toString());
-    throw new Error('Failed to offboard user: ' + error.message);
-  }
-}
-
-/**
- * Check if current user is super admin
- */
-function isSuperAdmin() {
-  try {
-    AdminDirectory.Users.list({customer: 'my_customer', maxResults: 1});
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * Generate a secure random password
- */
-function generatePassword() {
-  const length = 16;
-  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-  let password = '';
-  
-  for (let i = 0; i < length; i++) {
-    password += charset.charAt(Math.floor(Math.random() * charset.length));
-  }
-  
-  return password;
-}
 ```
 
 ## Usage
