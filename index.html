@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<!-- 
+  Google Workspace User Offboarding Tool
+  Version 2.0
+  
+  Description:
+  Web-based interface for securely offboarding users from Google Workspace.
+  Automates common offboarding tasks including suspension, password reset,
+  group removal, Drive transfer, and security cleanup.
+  
+  Features:
+  - User search with autocomplete
+  - Automated suspension and security cleanup
+  - Drive ownership transfer to manager
+  - Group membership removal
+  - OAuth token and session revocation
+  - Detailed success/error reporting
+  
+  Requirements:
+  - Google Apps Script backend (see companion .gs file)
+  - Super Admin permissions in Google Workspace
+  - Access to Admin SDK Directory API
+-->
+<html>
+  <head>
+    <base target="_top">
+    <title>Workspace Offboard</title>
+    
+    <!-- Prevent caching to ensure fresh data loads -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    
+    <style>
+      /* Base styles using Google Material Design principles */
+      body {
+        font-family: 'Google Sans', 'Roboto', Arial, sans-serif !important;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f8f9fa;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      
+      /* Main card container */
+      .card {
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1), 0 8px 16px rgba(0,0,0,0.1);
+        padding: 32px;
+        width: 100%;
+        max-width: 600px;
+        margin-top: 20px;
+      }
+      
+      /* Logo container */
+      .logo {
+        text-align: center;
+        margin-bottom: 24px;
+      }
+      .logo img {
+        max-width: 200px;
+        height: auto;
+      }
+      
+      /* Page title */
+      .title {
+        text-align: center;
+        color: #202124;
+        margin-bottom: 32px;
+        font-size: 28px;
+        font-weight: 500;
+      }
+      
+      /* Form field grouping */
+      .form-group {
+        margin-bottom: 20px;
+      }
+      
+      /* Form labels */
+      label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 500;
+        color: #202124;
+        font-size: 14px;
+      }
+      
+      /* Text inputs */
+      input[type="text"] {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        box-sizing: border-box;
+        font-size: 14px;
+        transition: border-color 0.2s;
+        background-color: white;
+      }
+      
+      /* Focus state for inputs */
+      input[type="text"]:focus {
+        border-color: #1a73e8;
+        outline: none;
+        box-shadow: 0 0 0 2px rgba(26,115,232,0.2);
+      }
+      
+      /* Placeholder text styling */
+      input[type="text"]::placeholder {
+        color: #5f6368;
+      }
+      
+      /* Error message styling */
+      .error-message {
+        color: #d93025;
+        font-size: 12px;
+        margin-top: 4px;
+        display: none;
+      }
+      
+      /* Error state for form fields */
+      .error input {
+        border-color: #d93025;
+      }
+      .error .error-message {
+        display: block;
+      }
+      
+      /* Submit button */
+      button {
+        background-color: #1a73e8;
+        color: white;
+        padding: 12px 24px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        width: 100%;
+        transition: background-color 0.2s, box-shadow 0.2s;
+        margin-top: 8px;
+      }
+      button:hover {
+        background-color: #1557b0;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+      }
+      button:active {
+        background-color: #174ea6;
+        box-shadow: 0 1px 1px rgba(0,0,0,0.2);
+      }
+      
+      /* Required field indicator (red asterisk) */
+      .required-field::after {
+        content: " *";
+        color: #d93025;
+      }
+      
+      /* User autocomplete suggestions dropdown */
+      .autocomplete-suggestions {
+        font-family: 'Google Sans', 'Roboto', Arial, sans-serif !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        width: 100%;
+        background: #fff;
+        border: 1px solid #dadce0;
+        border-radius: 0 0 4px 4px;
+        z-index: 10;
+        max-height: 180px;
+        overflow-y: auto;
+      }
+      .autocomplete-suggestion {
+        padding: 10px 16px;
+        cursor: pointer;
+        border-bottom: 1px solid #f0f0f0;
+        font-size: 15px;
+      }
+      .autocomplete-suggestion:last-child {
+        border-bottom: none;
+      }
+      .autocomplete-suggestion.active, .autocomplete-suggestion:hover {
+        background: #e8f0fe;
+      }
+      
+      /* Processing modal overlay */
+      .modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0,0,0,0.3);
+        z-index: 9999;
+        justify-content: center;
+        align-items: center;
+      }
+      .modal-overlay.active {
+        display: flex;
+      }
+      
+      /* Processing modal content */
+      .modal-content {
+        background: #fff;
+        padding: 32px 48px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      
+      /* Loading spinner animation */
+      .spinner {
+        border: 6px solid #f3f3f3;
+        border-top: 6px solid #1a73e8;
+        border-radius: 50%;
+        width: 48px;
+        height: 48px;
+        animation: spin 1s linear infinite;
+        margin-bottom: 20px;
+      }
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      
+      /* Processing text animation */
+      .processing-text {
+        font-size: 20px;
+        color: #1a73e8;
+        font-weight: 500;
+        letter-spacing: 1px;
+        animation: pulse 1.2s infinite;
+      }
+      @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+      }
+      
+      /* Success modal overlay */
+      .success-modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0,0,0,0.3);
+        z-index: 10000;
+        justify-content: center;
+        align-items: center;
+      }
+      .success-modal-overlay.active {
+        display: flex;
+      }
+      
+      /* Success modal content */
+      .success-modal-content {
+        background: #fff;
+        padding: 32px 48px;
+        border-radius: 8px;
+        box-shadow: 0 4px 32px rgba(0,0,0,0.25), 0 1.5px 6px rgba(0,0,0,0.12);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-width: 320px;
+      }
+      
+      /* Success modal title */
+      .success-title {
+        color: #188038;
+        font-size: 22px;
+        font-weight: 600;
+        margin-bottom: 16px;
+      }
+      
+      /* Success modal details */
+      .success-details {
+        text-align: left;
+        margin-bottom: 20px;
+        width: 100%;
+      }
+      .success-details p {
+        margin: 6px 0;
+        font-size: 15px;
+      }
+      
+      /* Success modal close button */
+      .close-success-btn {
+        background: #1a73e8;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        padding: 10px 24px;
+        font-size: 15px;
+        font-weight: 500;
+        cursor: pointer;
+        margin-top: 10px;
+        transition: background 0.2s;
+      }
+      .close-success-btn:hover {
+        background: #1557b0;
+      }
+      
+      /* Error modal overlay */
+      .error-modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0,0,0,0.3);
+        z-index: 10001;
+        justify-content: center;
+        align-items: center;
+      }
+      .error-modal-overlay.active {
+        display: flex;
+      }
+      
+      /* Error modal content */
+      .error-modal-content {
+        background: #fff;
+        padding: 32px 48px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-width: 320px;
+      }
+      
+      /* Error modal title */
+      .error-title {
+        color: #d93025;
+        font-size: 22px;
+        font-weight: 600;
+        margin-bottom: 16px;
+      }
+      
+      /* Error modal details */
+      .error-details {
+        text-align: left;
+        margin-bottom: 20px;
+        width: 100%;
+        color: #d93025;
+        font-size: 15px;
+      }
+      
+      /* Error modal close button */
+      .close-error-btn {
+        background: #1a73e8;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        padding: 10px 24px;
+        font-size: 15px;
+        font-weight: 500;
+        cursor: pointer;
+        margin-top: 10px;
+        transition: background 0.2s;
+      }
+      .close-error-btn:hover {
+        background: #1557b0;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Processing Modal: Shows spinner while user is being offboarded -->
+    <div class="modal-overlay" id="modalOverlay">
+      <div class="modal-content">
+        <div class="spinner"></div>
+        <div class="processing-text">Processing...</div>
+      </div>
+    </div>
+    
+    <!-- Success Modal: Shows detailed results after successful offboarding -->
+    <div class="success-modal-overlay" id="successModal">
+      <div class="success-modal-content">
+        <div class="success-title">User Offboarded Successfully!</div>
+        <div id="successUser" style="font-size:16px;font-weight:500;color:#1a73e8;margin-bottom:8px;"></div>
+        <div class="success-details" id="successDetails"></div>
+        <button class="close-success-btn" onclick="document.getElementById('successModal').classList.remove('active')">Close</button>
+      </div>
+    </div>
+    
+    <!-- Error Modal: Shows error message if offboarding fails -->
+    <div class="error-modal-overlay" id="errorModal">
+      <div class="error-modal-content">
+        <div class="error-title">Error Offboarding User</div>
+        <div class="error-details" id="errorDetails"></div>
+        <button class="close-error-btn" onclick="document.getElementById('errorModal').classList.remove('active')">Close</button>
+      </div>
+    </div>
+    
+    <div class="card">
+      <!-- Warning banner for non-admin users -->
+      <div style="background:#fff3cd;color:#856404;border:1px solid #ffeeba;padding:12px 20px;border-radius:6px;margin-bottom:20px;font-size:15px;">
+        <strong>Note:</strong> Only Google Workspace super admins can use this offboarding tool. If you are not a super admin, you will not be able to offboard users.
+      </div>
+      
+      <!-- Logo - Replace with your company logo URL -->
+      <div class="logo">
+        <img src="https://via.placeholder.com/200x60?text=Your+Logo" alt="Company Logo">
+      </div>
+      
+      <h1 class="title">Workspace Offboard</h1>
+      
+      <!-- List of automated offboarding actions -->
+      <div style="margin-bottom:18px;color:#444;font-size:16px;text-align:center;">
+        This tool will help you offboard users by:<br>
+        <ul style="text-align:left;max-width:400px;margin:12px auto 0 auto;padding-left:20px;">
+          <li style="margin-bottom:10px;">Suspending the user</li>
+          <li style="margin-bottom:10px;">Resetting their password</li>
+          <li style="margin-bottom:10px;">Removing them from all Google Groups</li>
+          <li style="margin-bottom:10px;">Transfer Drive ownership to manager</li>
+          <li style="margin-bottom:10px;">Delete user from custom admin roles</li>
+          <li style="margin-bottom:10px;">Remove app-specific passwords</li>
+          <li style="margin-bottom:10px;">Revoke OAuth tokens</li>
+          <li style="margin-bottom:10px;">Sign user out of all sessions</li>
+        </ul>
+      </div>
+      
+      <!-- Main offboarding form -->
+      <form id="offboardForm" autocomplete="off">
+        
+        <!-- User Selection with Autocomplete -->
+        <div class="form-group">
+          <label for="userSearch" class="required-field">Select User to Offboard</label>
+          <div style="position: relative;">
+            <!-- Visible input for typing/searching -->
+            <input type="text" id="userSearch" name="userSearch" autocomplete="off" required placeholder="Start typing a name or email...">
+            <!-- Hidden input to store selected user's email -->
+            <input type="hidden" id="userEmail" name="userEmail">
+            <!-- Autocomplete dropdown for user suggestions -->
+            <div id="userSuggestions" class="autocomplete-suggestions"></div>
+          </div>
+          <div class="error-message">Please select a user from the list</div>
+        </div>
+        
+        <button type="submit">Continue</button>
+      </form>
+    </div>
+    
+    <script>
+      /**
+       * User autocomplete functionality
+       * Fetches all active users for search/selection
+       */
+      
+      // Store all users for autocomplete
+      let allUsers = [];
+      
+      /**
+       * Fetch all active users from Google Workspace on page load
+       * Calls backend Apps Script function
+       */
+      function fetchUsers() {
+        google.script.run.withSuccessHandler(function(users) {
+          allUsers = users;
+        }).getAllUsers(); // Backend function name
+      }
+      fetchUsers();
+
+      // Setup autocomplete event listeners
+      const userInput = document.getElementById('userSearch');
+      const userEmail = document.getElementById('userEmail');
+      const userSuggestions = document.getElementById('userSuggestions');
+
+      /**
+       * Filter and display user suggestions as admin types
+       * Searches by both name and email address
+       */
+      userInput.addEventListener('input', function() {
+        const value = this.value.trim().toLowerCase();
+        userSuggestions.innerHTML = '';
+        
+        // Hide suggestions if input is empty
+        if (!value) {
+          userSuggestions.style.display = 'none';
+          userEmail.value = '';
+          return;
+        }
+        
+        // Filter users by name or email, limit to 10 results
+        const matches = allUsers.filter(u =>
+          u.name.toLowerCase().includes(value) || u.email.toLowerCase().includes(value)
+        ).slice(0, 10);
+        
+        // Hide if no matches
+        if (matches.length === 0) {
+          userSuggestions.style.display = 'none';
+          userEmail.value = '';
+          return;
+        }
+        
+        // Create suggestion items
+        matches.forEach(user => {
+          const div = document.createElement('div');
+          div.className = 'autocomplete-suggestion';
+          div.textContent = `${user.name} <${user.email}>`;
+          
+          // Handle user selection
+          div.addEventListener('mousedown', function(e) {
+            userInput.value = `${user.name} <${user.email}>`;
+            userEmail.value = user.email;
+            userSuggestions.style.display = 'none';
+          });
+          
+          userSuggestions.appendChild(div);
+        });
+        
+        userSuggestions.style.display = 'block';
+      });
+      
+      // Hide suggestions when input loses focus
+      userInput.addEventListener('blur', function() {
+        setTimeout(() => userSuggestions.style.display = 'none', 200);
+      });
+
+      /**
+       * Form submission handler
+       * Validates user selection and initiates offboarding process
+       */
+      document.getElementById('offboardForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        // Validate that a user has been selected
+        if (!userEmail.value) {
+          userInput.parentElement.parentElement.classList.add('error');
+          return;
+        } else {
+          userInput.parentElement.parentElement.classList.remove('error');
+        }
+        
+        // Show processing modal
+        document.getElementById('modalOverlay').classList.add('active');
+        
+        // Prepare form data for submission
+        // Note: manager field can be added if you implement manager selection in the UI
+        const formData = {
+          email: userEmail.value,
+          manager: null // Optional: Add manager email for Drive transfer
+        };
+        
+        // Call backend Apps Script function to offboard the user
+        google.script.run
+          .withSuccessHandler(function(result) {
+            // Hide processing modal
+            document.getElementById('modalOverlay').classList.remove('active');
+            
+            if (result && result.success) {
+              // Display the offboarded user's information
+              document.getElementById('successUser').textContent = result.userDisplay || '';
+              
+              // Format and display success message with action details
+              let detailsHtml = result.message.replace(/\n/g, '<br>');
+              
+              // Parse and display structured log of all actions taken
+              if (result.log && Array.isArray(result.log)) {
+                // Group log entries by action type
+                let grouped = {};
+                result.log.forEach(entry => {
+                  if (!grouped[entry.action]) grouped[entry.action] = [];
+                  grouped[entry.action].push(entry);
+                });
+                
+                // Display grouped actions with results
+                Object.keys(grouped).forEach(action => {
+                  detailsHtml += `<div style='margin-top:10px;'><strong>${action}</strong><ul style='margin:4px 0 0 18px;padding:0;'>`;
+                  grouped[action].forEach(entry => {
+                    detailsHtml += `<li>[${entry.result}] ${entry.details}</li>`;
+                  });
+                  detailsHtml += '</ul></div>';
+                });
+              }
+              
+              // Show success modal with all details
+              document.getElementById('successDetails').innerHTML = detailsHtml.trim();
+              document.getElementById('successModal').classList.add('active');
+              
+              // Reset form for next offboarding
+              document.getElementById('offboardForm').reset();
+            }
+          })
+          .withFailureHandler(function(error) {
+            // Hide processing modal and show error
+            document.getElementById('modalOverlay').classList.remove('active');
+            document.getElementById('errorDetails').textContent = error.message || 'An error occurred while offboarding the user.';
+            document.getElementById('errorModal').classList.add('active');
+          })
+          .offboardUser(formData); // Backend function name
+      });
+    </script>
+  </body>
+</html>
